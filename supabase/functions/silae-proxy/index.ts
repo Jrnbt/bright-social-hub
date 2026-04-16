@@ -1,183 +1,89 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { getCorsHeaders, corsResponse } from "../_shared/cors.ts";
 import { verifyAuth, unauthorizedResponse } from "../_shared/auth.ts";
-import { jsonResponse, errorResponse, sanitizeForLog } from "../_shared/validate.ts";
+import { jsonResponse, errorResponse } from "../_shared/validate.ts";
+import { silaePost } from "../_shared/silae-auth.ts";
 
-// --- Action allowlist with parameter validation ---
-
-interface ActionDef {
-  method: string;
-  path: string;
-  validate: (p: unknown) => string | null; // returns error msg or null if valid
-}
-
-function isNonEmptyString(v: unknown): v is string {
-  return typeof v === "string" && v.trim().length > 0;
-}
-
-function isIsoDate(v: unknown): boolean {
-  if (typeof v !== "string") return false;
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(v);
-}
-
-function isValidEtatDossier(v: unknown): boolean {
-  return v === 0 || v === 1 || v === 2 || v === undefined;
-}
-
-const SILAE_ACTIONS: Record<string, ActionDef> = {
+const ACTIONS: Record<string, {
+  endpoint: string;
+  buildBody: (p: any) => Record<string, unknown>;
+  validate: (p: any) => string | null;
+}> = {
   lister_dossiers: {
-    method: "POST",
-    path: "/api/v1/Dossiers/ListerDossiers",
-    validate: (p: unknown) => {
-      const params = p as Record<string, unknown> | undefined;
-      if (params && params.etatDossier !== undefined && !isValidEtatDossier(params.etatDossier)) {
-        return "etatDossier doit etre 0, 1 ou 2";
-      }
-      return null;
-    },
+    endpoint: "/v1/InfosTechniquesDossiers/ListeDossiers",
+    buildBody: (p) => ({ typeDossiers: 0, ...(p?.etatDossier !== undefined ? { etatDossier: p.etatDossier } : {}) }),
+    validate: () => null,
   },
   lister_salaries: {
-    method: "POST",
-    path: "/api/v1/Salaries/ListerSalariesInformations",
-    validate: (p: unknown) => {
-      const params = p as Record<string, unknown> | undefined;
-      if (!params || !isNonEmptyString(params.numeroDossier)) {
-        return "numeroDossier (string) requis";
-      }
-      if (!isIsoDate(params.dateReference)) {
-        return "dateReference requis au format ISO (ex: 2026-03-01T00:00:00)";
-      }
-      return null;
-    },
+    endpoint: "/v1/InfosSalaries/ListeSalaries",
+    buildBody: (p) => ({
+      numeroDossier: p.numeroDossier,
+      listeSalariesOptions: p.dateReference ? { optionActifALaDate: p.dateReference } : {},
+    }),
+    validate: (p) => !p?.numeroDossier ? "numeroDossier requis" : null,
   },
   get_bulletin_entete: {
-    method: "POST",
-    path: "/api/v1/Bulletins/ListerBulletinsEntetes",
-    validate: (p: unknown) => {
-      const params = p as Record<string, unknown> | undefined;
-      if (!params || !isNonEmptyString(params.numeroDossier)) {
-        return "numeroDossier (string) requis";
-      }
-      if (!isNonEmptyString(params.matriculeSalarie)) {
-        return "matriculeSalarie (string) requis";
-      }
-      if (typeof params.identifiantEmploi !== "number") {
-        return "identifiantEmploi (number) requis";
-      }
-      if (!isIsoDate(params.periode)) {
-        return "periode requis au format ISO (ex: 2026-03-01T00:00:00)";
-      }
-      return null;
-    },
+    endpoint: "/v1/InfosBulletins/SalarieBulletinEntete",
+    buildBody: (p) => ({
+      numeroDossier: p.numeroDossier,
+      requeteSalarieBulletinEntete: {
+        matriculeSalarie: p.matriculeSalarie,
+        identifiantEmploi: p.identifiantEmploi,
+        periode: p.periode,
+        indicePeriode: 0,
+      },
+    }),
+    validate: (p) => (!p?.numeroDossier || !p?.matriculeSalarie || !p?.periode) ? "numeroDossier, matriculeSalarie et periode requis" : null,
   },
   get_detail_cotisations: {
-    method: "POST",
-    path: "/api/v1/Bulletins/ListerLignesBulletinCotisations",
-    validate: (p: unknown) => {
-      const params = p as Record<string, unknown> | undefined;
-      if (!params || !isNonEmptyString(params.numeroDossier)) {
-        return "numeroDossier (string) requis";
-      }
-      if (!isNonEmptyString(params.matriculeSalarie)) {
-        return "matriculeSalarie (string) requis";
-      }
-      if (typeof params.identifiantEmploi !== "number") {
-        return "identifiantEmploi (number) requis";
-      }
-      if (!isIsoDate(params.periode)) {
-        return "periode requis au format ISO (ex: 2026-03-01T00:00:00)";
-      }
-      return null;
-    },
+    endpoint: "/v1/InfosBulletins/SalarieBulletinDetails",
+    buildBody: (p) => ({
+      numeroDossier: p.numeroDossier,
+      requeteSalarieBulletinDetails: {
+        typeDetails: 3,
+        matriculeSalarie: p.matriculeSalarie,
+        identifiantEmploi: p.identifiantEmploi,
+        periode: p.periode,
+        indicePeriode: 0,
+      },
+      requeteSalarieBulletinFiltres: {},
+    }),
+    validate: (p) => (!p?.numeroDossier || !p?.matriculeSalarie || !p?.periode) ? "numeroDossier, matriculeSalarie et periode requis" : null,
   },
   lister_absences: {
-    method: "POST",
-    path: "/api/v1/Absences/ListerAbsences",
-    validate: (p: unknown) => {
-      const params = p as Record<string, unknown> | undefined;
-      if (!params || !isNonEmptyString(params.numeroDossier)) {
-        return "numeroDossier (string) requis";
-      }
-      if (!isNonEmptyString(params.matriculeSalarie)) {
-        return "matriculeSalarie (string) requis";
-      }
-      if (!isIsoDate(params.periodeDebut)) {
-        return "periodeDebut requis au format ISO (ex: 2026-01-01T00:00:00)";
-      }
-      if (!isIsoDate(params.periodeFin)) {
-        return "periodeFin requis au format ISO (ex: 2026-03-31T00:00:00)";
-      }
-      return null;
-    },
+    endpoint: "/v1/Absences/SalarieAbsences",
+    buildBody: (p) => ({
+      numeroDossier: p.numeroDossier,
+      requeteSalarieAbsences: {
+        matriculeSalarie: p.matriculeSalarie,
+        periodeDebut: p.periodeDebut,
+        periodeFin: p.periodeFin,
+        optionFiltrage: 0,
+      },
+    }),
+    validate: (p) => (!p?.numeroDossier || !p?.matriculeSalarie) ? "numeroDossier et matriculeSalarie requis" : null,
   },
 };
 
 serve(async (req) => {
   const cors = getCorsHeaders(req);
+  if (req.method === "OPTIONS") return corsResponse(req);
 
-  // Preflight
-  if (req.method === "OPTIONS") {
-    return corsResponse(req);
-  }
-
-  // Auth
   const auth = await verifyAuth(req);
-  if (!auth.ok) {
-    return unauthorizedResponse(cors);
-  }
+  if (!auth.ok) return unauthorizedResponse(cors);
 
   try {
-    // Parse body
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch {
-      return errorResponse("Corps de requete JSON invalide", cors, 400);
-    }
+    const { action, params } = await req.json();
+    const route = ACTIONS[action];
+    if (!route) return errorResponse("Action inconnue", cors, 400);
 
-    const { action, params } = body as { action?: unknown; params?: unknown };
+    const err = route.validate(params ?? {});
+    if (err) return errorResponse(err, cors, 400);
 
-    // Validate action is a string and in the allowlist
-    if (typeof action !== "string" || !SILAE_ACTIONS[action]) {
-      return errorResponse("Action non reconnue", cors, 400);
-    }
-
-    const route = SILAE_ACTIONS[action];
-
-    // Validate params per action
-    const validationError = route.validate(params);
-    if (validationError) {
-      return errorResponse(validationError, cors, 400);
-    }
-
-    // Call Silae API
-    const SILAE_URL = Deno.env.get("SILAE_API_URL") ?? "";
-    const SILAE_TOKEN = Deno.env.get("SILAE_API_TOKEN") ?? "";
-
-    if (!SILAE_URL || !SILAE_TOKEN) {
-      console.error("silae-proxy: SILAE_API_URL ou SILAE_API_TOKEN non configure");
-      return errorResponse("Configuration serveur manquante", cors, 500);
-    }
-
-    const res = await fetch(`${SILAE_URL}${route.path}`, {
-      method: route.method,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${SILAE_TOKEN}`,
-      },
-      body: JSON.stringify(params ?? {}),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      console.error(`silae-proxy: Silae API error status=${res.status} action=${sanitizeForLog(action)}`);
-      return errorResponse("Erreur lors de l'appel Silae", cors, res.status >= 500 ? 502 : res.status);
-    }
-
+    const data = await silaePost(route.endpoint, route.buildBody(params ?? {}));
     return jsonResponse(data, cors);
-  } catch (err) {
-    console.error("silae-proxy: erreur interne", err);
-    return errorResponse("Erreur interne du serveur", cors, 500);
+  } catch (e) {
+    console.error("[silae-proxy]", e);
+    return errorResponse("Erreur lors de l appel Silae", cors);
   }
 });
