@@ -73,9 +73,8 @@ export function Tasks({
           <option value="">Toutes catégories</option>
           <option value="paie">Paie</option>
           <option value="rh">RH</option>
-          <option value="admin">Admin</option>
-          <option value="client">Client</option>
-          <option value="autre">Autre</option>
+          <option value="technique">Technique</option>
+          <option value="administratif">Administratif</option>
         </select>
         <select className={selectClass} value={filterSource} onChange={(e) => setFilterSource(e.target.value)}>
           <option value="">Toutes sources</option>

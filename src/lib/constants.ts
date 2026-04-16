@@ -49,9 +49,8 @@ export const STATUS_COLORS: Record<string, string> = {
 export const CATEGORY_LABELS: Record<string, string> = {
   paie: "Paie",
   rh: "RH",
-  admin: "Admin",
-  client: "Client",
-  autre: "Autre",
+  technique: "Technique",
+  administratif: "Administratif",
 };
 
 export const ROLE_LABELS: Record<string, string> = {

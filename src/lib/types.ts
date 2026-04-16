@@ -2,7 +2,7 @@ export interface Task {
   id: string;
   title: string;
   priority: "urgent" | "high" | "normal" | "low";
-  category: "paie" | "rh" | "admin" | "client" | "autre";
+  category: "paie" | "rh" | "technique" | "administratif";
   assignee: string;
   due: string;
   dossier: string;
