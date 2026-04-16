@@ -29,14 +29,22 @@ function KpiCard({
   value,
   label,
   color,
+  onClick,
 }: {
   icon: React.ReactNode;
   value: number;
   label: string;
   color: string;
+  onClick?: () => void;
 }) {
   return (
-    <div className="bg-white border border-border rounded-lg p-5 shadow-sm">
+    <div
+      className={cn(
+        "bg-white border border-border rounded-lg p-5 shadow-sm transition-all",
+        onClick && "cursor-pointer hover:shadow-md hover:border-rose/30 hover:-translate-y-0.5"
+      )}
+      onClick={onClick}
+    >
       <div
         className={cn(
           "w-10 h-10 rounded-[10px] flex items-center justify-center mb-3",
@@ -108,36 +116,42 @@ export function Dashboard({
           value={stats.todo}
           label="Tâches à faire"
           color="bg-rose-light"
+          onClick={() => onNavigate("tasks")}
         />
         <KpiCard
           icon={<Clock size={20} className="text-warning" />}
           value={stats.progress}
           label="Tâches en cours"
           color="bg-warning-light"
+          onClick={() => onNavigate("tasks")}
         />
         <KpiCard
           icon={<CheckCircle2 size={20} className="text-success" />}
           value={stats.doneThisMonth}
           label="Terminées ce mois"
           color="bg-success-light"
+          onClick={() => onNavigate("tasks")}
         />
         <KpiCard
           icon={<Building2 size={20} className="text-info" />}
           value={dossiers.length}
           label="Dossiers suivis"
           color="bg-info-light"
+          onClick={() => onNavigate("dossiers")}
         />
         <KpiCard
           icon={<Search size={20} className="text-danger" />}
           value={pendingControls}
           label="Contrôles en attente"
           color="bg-danger-light"
+          onClick={() => onNavigate("controls")}
         />
         <KpiCard
           icon={<Mail size={20} className="text-success" />}
           value={stats.missive}
           label="Emails Missive"
           color="bg-success-light"
+          onClick={() => onNavigate("tasks")}
         />
       </div>
 
