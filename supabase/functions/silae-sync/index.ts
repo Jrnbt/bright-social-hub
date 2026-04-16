@@ -38,20 +38,24 @@ async function fetchSalaries(numero: string, period: string): Promise<SalaryEntr
 async function checkBulletinExists(
   numero: string, matricule: string, period: string
 ): Promise<boolean> {
-  try {
-    await silaePost("/v1/InfosBulletins/SalarieBulletinEntete", {
-      numeroDossier: numero,
-      requeteSalarieBulletinEntete: {
-        matriculeSalarie: matricule,
-        identifiantEmploi: 1,
-        periode: toIsoDate(period),
-        indicePeriode: 0,
-      },
-    });
-    return true;
-  } catch {
-    return false;
+  // Essayer identifiantEmploi 1 puis 0 (varie selon les dossiers)
+  for (const emploiId of [1, 0]) {
+    try {
+      await silaePost("/v1/InfosBulletins/SalarieBulletinEntete", {
+        numeroDossier: numero,
+        requeteSalarieBulletinEntete: {
+          matriculeSalarie: matricule,
+          identifiantEmploi: emploiId,
+          periode: toIsoDate(period),
+          indicePeriode: 0,
+        },
+      });
+      return true;
+    } catch {
+      // Essayer le suivant
+    }
   }
+  return false;
 }
 
 serve(async (req) => {
