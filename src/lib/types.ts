@@ -85,7 +85,8 @@ export interface SuiviPaieLine {
   dateReception: string;
   traitementPar: string;
   dateEnvoiBulletins: string;
-  nombreBulletins: number;
+  effectif: number;
+  bsCalcules: number;
   entrees: number;
   sorties: number;
   bulletinsRefaits: number;

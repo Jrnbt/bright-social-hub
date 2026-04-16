@@ -31,6 +31,48 @@ async function fetchSalaries(numero: string, period: string): Promise<SalaryEntr
   return data.listeSalariesInformations ?? [];
 }
 
+/** Verifie si un bulletin a ete calcule pour un salarie/periode */
+async function checkBulletinExists(
+  numero: string,
+  matricule: string,
+  period: string
+): Promise<boolean> {
+  try {
+    const data = await silaePost("/v1/InfosBulletins/SalarieBulletinEntete", {
+      numeroDossier: numero,
+      requeteSalarieBulletinEntete: {
+        matriculeSalarie: matricule,
+        identifiantEmploi: 1,
+        periode: toIsoDate(period),
+        indicePeriode: 0,
+      },
+    });
+    // Si on recoit un brut, le bulletin existe
+    return data?.brut !== undefined;
+  } catch {
+    // Erreur 400 = pas de bulletin
+    return false;
+  }
+}
+
+/** Compte les bulletins calcules pour un dossier (batch par 5) */
+async function countCalculatedBulletins(
+  numero: string,
+  salaries: SalaryEntry[],
+  period: string
+): Promise<number> {
+  let count = 0;
+  const BATCH = 5;
+  for (let i = 0; i < salaries.length; i += BATCH) {
+    const batch = salaries.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map((s) => checkBulletinExists(numero, s.matriculeSalarie, period))
+    );
+    count += results.filter(Boolean).length;
+  }
+  return count;
+}
+
 serve(async (req) => {
   const cors = getCorsHeaders(req);
   if (req.method === "OPTIONS") return corsResponse(req);
@@ -64,12 +106,13 @@ serve(async (req) => {
     const dossiers: { numero: string; raisonSociale: string; siret: string }[] =
       dossierData.listeDossiers ?? [];
 
-    // 2. Pour chaque dossier: fetch M-1, M, M+1
+    // 2. Pour chaque dossier: fetch M-1, M, M+1 + check bulletins calcules
     let totalEntrees = 0;
     let totalSorties = 0;
+    let totalBsCalcules = 0;
     const lines: any[] = [];
 
-    const BATCH = 10;
+    const BATCH = 5;
     for (let i = 0; i < dossiers.length; i += BATCH) {
       const batch = dossiers.slice(i, i + BATCH);
       const results = await Promise.all(
@@ -87,11 +130,17 @@ serve(async (req) => {
           const entrees = [...matCurr].filter((m) => !matPrev.has(m)).length;
           const sorties = [...matCurr].filter((m) => !matNext.has(m)).length;
 
+          // Compter les bulletins reellement calcules
+          const bsCalcules = salCurr.length > 0
+            ? await countCalculatedBulletins(d.numero, salCurr, period)
+            : 0;
+
           return {
             numero: d.numero,
             nom: d.raisonSociale.trim(),
             siret: d.siret,
-            bulletins: salCurr.length,
+            effectif: salCurr.length,
+            bsCalcules,
             entrees,
             sorties,
             salCurr,
@@ -102,6 +151,7 @@ serve(async (req) => {
       for (const r of results) {
         totalEntrees += r.entrees;
         totalSorties += r.sorties;
+        totalBsCalcules += r.bsCalcules;
 
         // Upsert dossier
         await sb.from("dossiers").upsert({
@@ -109,16 +159,16 @@ serve(async (req) => {
           numero: r.numero,
           nom: r.nom,
           siret: r.siret,
-          effectif: r.bulletins,
+          effectif: r.effectif,
           synced_from_silae: true,
           last_silae_sync: new Date().toISOString(),
         }, { onConflict: "numero", ignoreDuplicates: false });
 
-        if (r.bulletins > 0 || r.entrees > 0 || r.sorties > 0) {
+        if (r.effectif > 0 || r.entrees > 0 || r.sorties > 0) {
           lines.push(r);
         }
 
-        // Snapshots (reutilise salCurr, pas de double fetch)
+        // Snapshots
         if (r.salCurr.length > 0) {
           await sb.from("silae_salaries_snapshot").upsert(
             r.salCurr.map((s) => ({
@@ -149,7 +199,8 @@ serve(async (req) => {
         mois_id: moisId,
         numero_dossier: l.numero,
         nom_dossier: l.nom,
-        nombre_bulletins: l.bulletins,
+        effectif: l.effectif,
+        bs_calcules: l.bsCalcules,
         entrees: l.entrees,
         sorties: l.sorties,
         synced_from_silae: true,
@@ -176,6 +227,8 @@ serve(async (req) => {
       status: "ok", period,
       dossiers_synced: dossiers.length,
       lines_with_data: lines.length,
+      effectif_total: lines.reduce((s, l) => s + l.effectif, 0),
+      bs_calcules_total: totalBsCalcules,
       entrees_total: totalEntrees,
       sorties_total: totalSorties,
     }, cors);

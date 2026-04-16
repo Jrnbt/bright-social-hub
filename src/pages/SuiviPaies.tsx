@@ -22,7 +22,8 @@ export function SuiviPaies({ mois, onSyncSilae, isSyncing, onUpdateLine }: Suivi
   const lines = currentMois?.lines || [];
 
   // Stats
-  const totalBulletins = lines.reduce((s, l) => s + (l.nombreBulletins || 0), 0);
+  const totalEffectif = lines.reduce((s, l) => s + (l.effectif || 0), 0);
+  const totalBsCalcules = lines.reduce((s, l) => s + (l.bsCalcules || 0), 0);
   const totalEntrees = lines.reduce((s, l) => s + (l.entrees || 0), 0);
   const totalSorties = lines.reduce((s, l) => s + (l.sorties || 0), 0);
   const dsnOk = lines.filter((l) => l.dsn?.toUpperCase() === "OK").length;
@@ -77,7 +78,8 @@ export function SuiviPaies({ mois, onSyncSilae, isSyncing, onUpdateLine }: Suivi
         {lines.length > 0 && (
           <div className="flex gap-2">
             <span className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg bg-marine-light text-marine">{lines.length} dossiers</span>
-            <span className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg bg-rose-light text-rose">{totalBulletins} bulletins</span>
+            <span className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg bg-marine-light text-marine">{totalEffectif} salariés</span>
+            <span className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg bg-rose-light text-rose">{totalBsCalcules}/{totalEffectif} BS</span>
             <span className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg bg-success-light text-success">{totalEntrees} entrées</span>
             <span className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg bg-danger-light text-danger">{totalSorties} sorties</span>
             <span className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg bg-info-light text-info">DSN {dsnOk}/{lines.length}</span>
@@ -274,7 +276,8 @@ export function SuiviPaies({ mois, onSyncSilae, isSyncing, onUpdateLine }: Suivi
                   {SUIVI_PAIE_COLUMNS.map((col) => {
                     let content = null;
                     if (col.key === "nomDossier") content = <span className="text-xs font-extrabold text-marine">{lines.length} dossiers</span>;
-                    else if (col.key === "nombreBulletins") content = <span className="text-xs font-extrabold text-rose">{totalBulletins}</span>;
+                    else if (col.key === "effectif") content = <span className="text-xs font-extrabold text-marine">{totalEffectif}</span>;
+                    else if (col.key === "bsCalcules") content = <span className="text-xs font-extrabold text-rose">{totalBsCalcules}</span>;
                     else if (col.key === "entrees") content = <span className="text-xs font-extrabold text-success">{totalEntrees || "—"}</span>;
                     else if (col.key === "sorties") content = <span className="text-xs font-extrabold text-danger">{totalSorties || "—"}</span>;
                     else if (col.key === "dsn") content = <span className="text-xs font-extrabold text-info">{dsnOk}/{lines.length}</span>;
