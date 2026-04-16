@@ -6,6 +6,18 @@ import type {
   Report, AppConfig, SuiviPaieMois, SuiviPaieLine,
 } from "@/lib/types";
 
+// ── Shallow compare (avoids JSON.stringify cost) ───
+function shallowEqual<T extends Record<string, any>>(a: T, b: T): boolean {
+  if (a === b) return true;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 // ── Generic hook with Realtime ─────────────────────
 
 function useSupabaseTable<T extends { id: string }>(
@@ -71,7 +83,12 @@ function useSupabaseTable<T extends { id: string }>(
         const nextMap = new Map(next.map((r) => [r.id, r]));
 
         const handleDbError = (op: string) => (result: { error: any }) => {
-          if (result.error) console.error(`[DB ${op}] ${table}:`, result.error.message);
+          if (result.error) {
+            console.error(`[DB ${op}] ${table}:`, result.error.message);
+            import("sonner").then(({ toast }) => {
+              toast.error(`Erreur ${op} (${table}): ${result.error.message}`);
+            });
+          }
         };
 
         // Inserts
@@ -84,7 +101,7 @@ function useSupabaseTable<T extends { id: string }>(
         // Updates
         for (const [id, row] of nextMap) {
           const old = prevMap.get(id);
-          if (old && JSON.stringify(old) !== JSON.stringify(row)) {
+          if (old && !shallowEqual(old, row)) {
             supabase.from(table).update(toDb(row)).eq("id", id).then(handleDbError("UPDATE"));
           }
         }
@@ -163,7 +180,14 @@ export function useConfig(): [AppConfig, (updater: AppConfig | ((prev: AppConfig
     (updater: AppConfig | ((prev: AppConfig) => AppConfig)) => {
       setConfig((prev) => {
         const next = typeof updater === "function" ? updater(prev) : updater;
-        supabase.from("app_config").update(toDb(next)).eq("id", "singleton").then();
+        supabase.from("app_config").update(toDb(next)).eq("id", "singleton").then(({ error }) => {
+          if (error) {
+            console.error("[DB UPDATE] app_config:", error.message);
+            import("sonner").then(({ toast }) => {
+              toast.error(`Erreur config: ${error.message}`);
+            });
+          }
+        });
         return next;
       });
     },
@@ -257,25 +281,41 @@ export function useSuiviPaies(): [SuiviPaieMois[], (updater: SuiviPaieMois[] | (
     return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); };
   }, [fetchAll]);
 
-  // Setter: sync changes to DB
+  // Setter: sync only changed mois/lines to DB
   const set = useCallback(
     (updater: SuiviPaieMois[] | ((prev: SuiviPaieMois[]) => SuiviPaieMois[])) => {
       setMois((prev) => {
         const next = typeof updater === "function" ? updater(prev) : updater;
 
-        // For each mois in next, upsert mois + lines
+        const prevMap = new Map(prev.map((m) => [m.id, m]));
+
         for (const m of next) {
-          supabase.from("suivi_paie_mois").upsert({
-            id: m.id,
-            period: m.period,
-            last_sync_at: m.lastSyncAt || null,
-          }, { onConflict: "period" }).then();
+          const old = prevMap.get(m.id);
+
+          // Upsert mois row only if new or changed
+          if (!old || old.period !== m.period || old.lastSyncAt !== m.lastSyncAt) {
+            supabase.from("suivi_paie_mois").upsert({
+              id: m.id,
+              period: m.period,
+              last_sync_at: m.lastSyncAt || null,
+            }, { onConflict: "period" }).then(({ error }) => {
+              if (error) console.error("[DB UPSERT] suivi_paie_mois:", error.message);
+            });
+          }
+
+          // Build a map of old lines for diff
+          const oldLineMap = new Map((old?.lines ?? []).map((l) => [l.id, l]));
 
           for (const l of m.lines) {
-            supabase.from("suivi_paie_lines").upsert({
-              ...toDb(l),
-              mois_id: m.id,
-            }, { onConflict: "id" }).then();
+            const oldLine = oldLineMap.get(l.id);
+            if (!oldLine || !shallowEqual(oldLine, l)) {
+              supabase.from("suivi_paie_lines").upsert({
+                ...toDb(l),
+                mois_id: m.id,
+              }, { onConflict: "id" }).then(({ error }) => {
+                if (error) console.error("[DB UPSERT] suivi_paie_lines:", error.message);
+              });
+            }
           }
         }
 

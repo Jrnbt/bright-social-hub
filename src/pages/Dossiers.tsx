@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Search, X, Building2, User, Phone, Mail, MapPin, FileText, Pencil, Save, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, Search, X, Building2, MapPin, FileText, Pencil, Save, ChevronDown, ChevronUp } from "lucide-react";
 import type { Dossier, Member, Control } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -72,7 +72,7 @@ function DossierFiche({
 
   const resp = members.find((m) => m.id === dossier.responsable);
   const dossierControls = controls.filter((c) => c.dossierId === dossier.id);
-  const lastControl = dossierControls[dossierControls.length - 1];
+  const lastControl = dossierControls[0];
 
   const handleSave = () => {
     onUpdate(draft);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Plus, RefreshCw, Pencil, Trash2, Mail } from "lucide-react";
 import type { Task, Member, Dossier } from "@/lib/types";
 import {
@@ -37,15 +37,17 @@ export function Tasks({
   const [filterSource, setFilterSource] = useState("");
   const [filterAssignee, setFilterAssignee] = useState("");
 
-  let filtered = [...tasks];
-  if (filterStatus) filtered = filtered.filter((t) => t.status === filterStatus);
-  if (filterPriority) filtered = filtered.filter((t) => t.priority === filterPriority);
-  if (filterCategory) filtered = filtered.filter((t) => t.category === filterCategory);
-  if (filterSource) filtered = filtered.filter((t) => t.source === filterSource);
-  if (filterAssignee) filtered = filtered.filter((t) => t.assignee === filterAssignee);
-
-  const prioOrder: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
-  filtered.sort((a, b) => (prioOrder[a.priority] ?? 2) - (prioOrder[b.priority] ?? 2));
+  const filtered = useMemo(() => {
+    let result = [...tasks];
+    if (filterStatus) result = result.filter((t) => t.status === filterStatus);
+    if (filterPriority) result = result.filter((t) => t.priority === filterPriority);
+    if (filterCategory) result = result.filter((t) => t.category === filterCategory);
+    if (filterSource) result = result.filter((t) => t.source === filterSource);
+    if (filterAssignee) result = result.filter((t) => t.assignee === filterAssignee);
+    const prioOrder: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+    result.sort((a, b) => (prioOrder[a.priority] ?? 2) - (prioOrder[b.priority] ?? 2));
+    return result;
+  }, [tasks, filterStatus, filterPriority, filterCategory, filterSource, filterAssignee]);
 
   const selectClass =
     "px-3 py-2 rounded-lg border border-border text-sm font-semibold text-foreground bg-white focus:outline-none focus:border-rose transition-colors";

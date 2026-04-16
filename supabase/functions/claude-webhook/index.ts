@@ -66,8 +66,8 @@ const MAX_BATCH_TASKS = 50;
 
 const TASK_REQUIRED_FIELDS = ["title", "status", "priority", "category"];
 
-const VALID_TASK_STATUSES = new Set(["todo", "in_progress", "done", "cancelled"]);
-const VALID_TASK_PRIORITIES = new Set(["low", "medium", "high", "urgent"]);
+const VALID_TASK_STATUSES = new Set(["todo", "progress", "done"]);
+const VALID_TASK_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 
 // --- Validation helpers ---
 

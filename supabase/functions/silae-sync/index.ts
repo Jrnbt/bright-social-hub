@@ -30,7 +30,8 @@ async function fetchSalaries(numero: string, period: string): Promise<SalaryEntr
       listeSalariesOptions: { optionActifALaDate: toIsoDate(period) },
     });
     return data.listeSalariesInformations ?? [];
-  } catch {
+  } catch (e) {
+    console.error(`[silae-sync] fetchSalaries ${numero}:`, e);
     return [];
   }
 }
@@ -69,6 +70,7 @@ serve(async (req) => {
   const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   const sb = createClient(SB_URL, SB_KEY);
 
+  let logId: number | null = null;
   try {
     const { period } = await req.json();
     if (!period || !isValidPeriod(period)) {
@@ -82,7 +84,7 @@ serve(async (req) => {
     const { data: logRow } = await sb.from("silae_sync_log").insert({
       period, status: "running",
     }).select().single();
-    const logId = logRow?.id;
+    logId = logRow?.id;
 
     // PHASE 1 : Lister dossiers + effectif M + ecrire les lignes immediatement
     const dossierData = await silaePost("/v1/InfosTechniquesDossiers/ListeDossiers", {
@@ -96,8 +98,9 @@ serve(async (req) => {
       id: moisId, period, last_sync_at: new Date().toISOString(),
     }, { onConflict: "period" });
 
-    // Fetch effectif M et ecrire chaque ligne en base immediatement
+    // Fetch effectif M pour tous les dossiers (batch 10)
     const activeDossiers: { numero: string; nom: string; siret: string; salaries: SalaryEntry[] }[] = [];
+    const allResults: { numero: string; nom: string; siret: string; salaries: SalaryEntry[] }[] = [];
 
     const BATCH_SAL = 10;
     for (let i = 0; i < allDossiers.length; i += BATCH_SAL) {
@@ -110,45 +113,38 @@ serve(async (req) => {
           salaries: await fetchSalaries(d.numero, period),
         }))
       );
+      allResults.push(...results);
+    }
 
-      for (const r of results) {
-        // Upsert dossier
-        await sb.from("dossiers").upsert({
-          id: `dos_${r.numero}`,
-          numero: r.numero,
-          nom: r.nom,
-          siret: r.siret,
-          effectif: r.salaries.length,
-          synced_from_silae: true,
-          last_silae_sync: new Date().toISOString(),
-        }, { onConflict: "numero", ignoreDuplicates: false });
+    // Batch upsert dossiers (1 seul appel DB)
+    const now = new Date().toISOString();
+    const dossierRows = allResults.map((r) => ({
+      id: `dos_${r.numero}`, numero: r.numero, nom: r.nom, siret: r.siret,
+      effectif: r.salaries.length, synced_from_silae: true, last_silae_sync: now,
+    }));
+    await sb.from("dossiers").upsert(dossierRows, { onConflict: "numero", ignoreDuplicates: false });
 
-        // Ecrire la ligne suivi MAINTENANT (meme sans entrees/sorties/bs)
-        if (r.salaries.length > 0) {
-          activeDossiers.push(r);
+    // Pre-fetch toutes les lignes existantes (1 seul appel DB)
+    const { data: existingLines } = await sb.from("suivi_paie_lines")
+      .select("numero_dossier, gp, date_reception, traitement_par, date_envoi_bulletins, bs_calcules, entrees, sorties")
+      .eq("mois_id", moisId);
+    const existingMap = new Map((existingLines ?? []).map((l) => [l.numero_dossier, l]));
 
-          const existing = await sb.from("suivi_paie_lines")
-            .select("gp, date_reception, traitement_par, date_envoi_bulletins, bs_calcules, entrees, sorties")
-            .eq("mois_id", moisId).eq("numero_dossier", r.numero).maybeSingle();
-
-          await sb.from("suivi_paie_lines").upsert({
-            id: `spl_${period.replace("-", "_")}_${r.numero}`,
-            mois_id: moisId,
-            numero_dossier: r.numero,
-            nom_dossier: r.nom,
-            effectif: r.salaries.length,
-            bs_calcules: existing?.data?.bs_calcules ?? 0,
-            entrees: existing?.data?.entrees ?? 0,
-            sorties: existing?.data?.sorties ?? 0,
-            synced_from_silae: true,
-            last_silae_sync: new Date().toISOString(),
-            gp: existing?.data?.gp ?? "",
-            date_reception: existing?.data?.date_reception ?? "",
-            traitement_par: existing?.data?.traitement_par ?? "",
-            date_envoi_bulletins: existing?.data?.date_envoi_bulletins ?? "",
-          }, { onConflict: "id" });
-        }
-      }
+    // Batch upsert lignes suivi (1 seul appel DB)
+    const lineRows = allResults.filter((r) => r.salaries.length > 0).map((r) => {
+      activeDossiers.push(r);
+      const ex = existingMap.get(r.numero);
+      return {
+        id: `spl_${period.replace("-", "_")}_${r.numero}`, mois_id: moisId,
+        numero_dossier: r.numero, nom_dossier: r.nom, effectif: r.salaries.length,
+        bs_calcules: ex?.bs_calcules ?? 0, entrees: ex?.entrees ?? 0, sorties: ex?.sorties ?? 0,
+        synced_from_silae: true, last_silae_sync: now,
+        gp: ex?.gp ?? "", date_reception: ex?.date_reception ?? "",
+        traitement_par: ex?.traitement_par ?? "", date_envoi_bulletins: ex?.date_envoi_bulletins ?? "",
+      };
+    });
+    if (lineRows.length > 0) {
+      await sb.from("suivi_paie_lines").upsert(lineRows, { onConflict: "id" });
     }
 
     // PHASE 2 : Enrichir avec entrees/sorties + BS calcules (best effort)
@@ -230,6 +226,14 @@ serve(async (req) => {
     }, cors);
   } catch (e) {
     console.error("[silae-sync]", e);
+    // Marquer le log en erreur
+    if (logId) {
+      await sb.from("silae_sync_log").update({
+        status: "error",
+        error_message: String(e).slice(0, 500),
+        finished_at: new Date().toISOString(),
+      }).eq("id", logId).catch(() => {});
+    }
     return errorResponse("Erreur lors de la synchronisation Silae", cors);
   }
 });

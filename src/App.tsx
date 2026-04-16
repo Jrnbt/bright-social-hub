@@ -286,7 +286,7 @@ function DossierModal({
 }: {
   open: boolean;
   members: Member[];
-  onSave: (numero: string, nom: string, responsable: string, notes: string) => void;
+  onSave: (data: { numero: string; nom: string; responsable: string; siret: string; dirigeant: string }) => void;
   onClose: () => void;
 }) {
   const [numero, setNumero] = useState("");
@@ -352,7 +352,7 @@ function DossierModal({
           <button
             onClick={() => {
               if (!numero.trim() || !nom.trim()) { toast.error("N° dossier et nom requis"); return; }
-              onSave(numero.trim(), nom.trim(), responsable, siret.trim() + "|||" + dirigeant.trim());
+              onSave({ numero: numero.trim(), nom: nom.trim(), responsable, siret: siret.trim(), dirigeant: dirigeant.trim() });
               setNumero(""); setNom(""); setSiret(""); setDirigeant("");
               onClose();
             }}
@@ -621,20 +621,19 @@ function AuthenticatedApp() {
 
   // ── Dossiers ──
   const handleSaveDossier = useCallback(
-    (numero: string, nom: string, responsable: string, extraData: string) => {
-      const [siret = "", dirigeant = ""] = extraData.split("|||");
+    (data: { numero: string; nom: string; responsable: string; siret: string; dirigeant: string }) => {
       setDossiers((prev) => [
         ...prev,
         {
           id: generateId("dos"),
-          numero,
-          nom,
-          responsable,
+          numero: data.numero,
+          nom: data.nom,
+          responsable: data.responsable,
           notes: "",
           createdAt: new Date().toISOString(),
-          siret,
+          siret: data.siret,
           ccn: "",
-          dirigeant,
+          dirigeant: data.dirigeant,
           adresse: "",
           codePostal: "",
           ville: "",
@@ -713,12 +712,14 @@ function AuthenticatedApp() {
       }
 
       const win = window.open("", "_blank", "width=800,height=600");
-      if (win) {
-        win.document.write(`<!DOCTYPE html><html><head><title>Rapport - ${e(report.dossierName)}</title>
-          <style>body{font-family:'Nunito',sans-serif;padding:40px;max-width:800px;margin:auto;color:#1A1A2E;}
-          h2{color:#0F0135;}h3{color:#FF0749;margin-top:20px;}hr{border:1px solid #E2E4EA;}
-          p{margin:6px 0;font-size:14px;}</style></head><body>${html}</body></html>`);
+      if (!win) {
+        toast.error("Popup bloquée — autorisez les popups pour ce site");
+        return;
       }
+      win.document.write(`<!DOCTYPE html><html><head><title>Rapport - ${e(report.dossierName)}</title>
+        <style>body{font-family:'Nunito',sans-serif;padding:40px;max-width:800px;margin:auto;color:#1A1A2E;}
+        h2{color:#0F0135;}h3{color:#FF0749;margin-top:20px;}hr{border:1px solid #E2E4EA;}
+        p{margin:6px 0;font-size:14px;}</style></head><body>${html}</body></html>`);
     },
     [reports]
   );

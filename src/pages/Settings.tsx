@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import type { Member, AppConfig } from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/constants";
@@ -32,6 +32,12 @@ export function Settings({
   const [newLastname, setNewLastname] = useState("");
   const [newRole, setNewRole] = useState<Member["role"]>("gestionnaire");
   const [silaeStatus, setSilaeStatus] = useState<"unknown" | "checking" | "connected">("unknown");
+
+  useEffect(() => {
+    setCabinet(config.cabinet);
+    setMissiveBox(config.missiveBox);
+    setMissiveLimit(config.missiveLimit);
+  }, [config]);
 
   const tabs = [
     { id: "general" as const, label: "Général" },

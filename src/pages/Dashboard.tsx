@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   ClipboardList,
   Clock,
@@ -59,16 +60,34 @@ export function Dashboard({
   controls,
   onNavigate,
 }: DashboardProps) {
-  const now = new Date();
-  const todoCount = tasks.filter((t) => t.status === "todo").length;
-  const progressCount = tasks.filter((t) => t.status === "progress").length;
-  const doneThisMonth = tasks.filter((t) => {
-    if (t.status !== "done") return false;
-    const d = new Date(t.createdAt);
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).length;
+  const stats = useMemo(() => {
+    const now = new Date();
+    let todo = 0, progress = 0, doneThisMonth = 0, missive = 0;
+    for (const t of tasks) {
+      if (t.status === "todo") todo++;
+      else if (t.status === "progress") progress++;
+      else if (t.status === "done") {
+        const d = new Date(t.createdAt);
+        if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()) doneThisMonth++;
+      }
+      if (t.source === "missive") missive++;
+    }
+    return { todo, progress, doneThisMonth, missive };
+  }, [tasks]);
+
+  const tasksByAssignee = useMemo(() => {
+    const map = new Map<string, Task[]>();
+    for (const t of tasks) {
+      if (t.assignee) {
+        const arr = map.get(t.assignee) ?? [];
+        arr.push(t);
+        map.set(t.assignee, arr);
+      }
+    }
+    return map;
+  }, [tasks]);
+
   const pendingControls = controls.filter((c) => c.status === "pending").length;
-  const missiveCount = tasks.filter((t) => t.source === "missive").length;
 
   const urgentTasks = tasks
     .filter(
@@ -86,19 +105,19 @@ export function Dashboard({
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
         <KpiCard
           icon={<ClipboardList size={20} className="text-rose" />}
-          value={todoCount}
+          value={stats.todo}
           label="Tâches à faire"
           color="bg-rose-light"
         />
         <KpiCard
           icon={<Clock size={20} className="text-warning" />}
-          value={progressCount}
+          value={stats.progress}
           label="Tâches en cours"
           color="bg-warning-light"
         />
         <KpiCard
           icon={<CheckCircle2 size={20} className="text-success" />}
-          value={doneThisMonth}
+          value={stats.doneThisMonth}
           label="Terminées ce mois"
           color="bg-success-light"
         />
@@ -116,7 +135,7 @@ export function Dashboard({
         />
         <KpiCard
           icon={<Mail size={20} className="text-success" />}
-          value={missiveCount}
+          value={stats.missive}
           label="Emails Missive"
           color="bg-success-light"
         />
@@ -250,7 +269,7 @@ export function Dashboard({
           ) : (
             <div className="space-y-3">
               {members.map((m) => {
-                const mTasks = tasks.filter((t) => t.assignee === m.id);
+                const mTasks = tasksByAssignee.get(m.id) ?? [];
                 const done = mTasks.filter((t) => t.status === "done").length;
                 const total = mTasks.length;
                 const pct = total ? Math.round((done / total) * 100) : 0;

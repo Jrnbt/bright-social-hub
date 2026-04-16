@@ -57,16 +57,6 @@ export function escapeHtml(str: string): string {
     .replace(/'/g, "&#039;");
 }
 
-/** Valide un format SIRET (14 chiffres) */
-export function isValidSiret(s: string): boolean {
-  return s === "" || /^\d{14}$/.test(s);
-}
-
-/** Tronque une chaine a une longueur max */
-export function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max) : s;
-}
-
 export function getLast12Periods(): { value: string; label: string }[] {
   const periods = [];
   const now = new Date();

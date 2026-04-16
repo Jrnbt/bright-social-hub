@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getCorsHeaders, corsResponse } from "../_shared/cors.ts";
 import { verifyAuth, unauthorizedResponse } from "../_shared/auth.ts";
-import { jsonResponse, errorResponse, sanitizeForLog } from "../_shared/validate.ts";
+import { jsonResponse, errorResponse } from "../_shared/validate.ts";
 
 // Sources RSS fiables pour la veille sociale francaise
 const RSS_SOURCES = [

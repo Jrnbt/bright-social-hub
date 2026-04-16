@@ -1,5 +1,5 @@
 import type { Task, Member } from "@/lib/types";
-import { PRIORITY_DOTS, STATUS_LABELS, ROLE_LABELS } from "@/lib/constants";
+import { PRIORITY_DOTS, ROLE_LABELS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 interface TeamProps {

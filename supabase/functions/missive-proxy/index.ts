@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { getCorsHeaders, corsResponse } from "../_shared/cors.ts";
 import { verifyAuth, unauthorizedResponse } from "../_shared/auth.ts";
-import { jsonResponse, errorResponse, sanitizeForLog } from "../_shared/validate.ts";
+import { jsonResponse, errorResponse } from "../_shared/validate.ts";
 
 const BASE = "https://mail.missiveapp.com/v1";
 
