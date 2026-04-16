@@ -24,21 +24,22 @@ function toIsoDate(period: string): string {
 }
 
 async function fetchSalaries(numero: string, period: string): Promise<SalaryEntry[]> {
-  const data = await silaePost("/v1/InfosSalaries/ListeSalaries", {
-    numeroDossier: numero,
-    listeSalariesOptions: { optionActifALaDate: toIsoDate(period) },
-  });
-  return data.listeSalariesInformations ?? [];
+  try {
+    const data = await silaePost("/v1/InfosSalaries/ListeSalaries", {
+      numeroDossier: numero,
+      listeSalariesOptions: { optionActifALaDate: toIsoDate(period) },
+    });
+    return data.listeSalariesInformations ?? [];
+  } catch {
+    return [];
+  }
 }
 
-/** Verifie si un bulletin a ete calcule pour un salarie/periode */
 async function checkBulletinExists(
-  numero: string,
-  matricule: string,
-  period: string
+  numero: string, matricule: string, period: string
 ): Promise<boolean> {
   try {
-    const data = await silaePost("/v1/InfosBulletins/SalarieBulletinEntete", {
+    await silaePost("/v1/InfosBulletins/SalarieBulletinEntete", {
       numeroDossier: numero,
       requeteSalarieBulletinEntete: {
         matriculeSalarie: matricule,
@@ -47,30 +48,10 @@ async function checkBulletinExists(
         indicePeriode: 0,
       },
     });
-    // Si on recoit un brut, le bulletin existe
-    return data?.brut !== undefined;
+    return true;
   } catch {
-    // Erreur 400 = pas de bulletin
     return false;
   }
-}
-
-/** Compte les bulletins calcules pour un dossier (batch par 5) */
-async function countCalculatedBulletins(
-  numero: string,
-  salaries: SalaryEntry[],
-  period: string
-): Promise<number> {
-  let count = 0;
-  const BATCH = 5;
-  for (let i = 0; i < salaries.length; i += BATCH) {
-    const batch = salaries.slice(i, i + BATCH);
-    const results = await Promise.all(
-      batch.map((s) => checkBulletinExists(numero, s.matriculeSalarie, period))
-    );
-    count += results.filter(Boolean).length;
-  }
-  return count;
 }
 
 serve(async (req) => {
@@ -99,27 +80,65 @@ serve(async (req) => {
     }).select().single();
     const logId = logRow?.id;
 
-    // 1. Lister dossiers en production
+    // PHASE 1 : Lister dossiers + effectif mois M (rapide)
     const dossierData = await silaePost("/v1/InfosTechniquesDossiers/ListeDossiers", {
       typeDossiers: 0, etatDossier: 2,
     });
-    const dossiers: { numero: string; raisonSociale: string; siret: string }[] =
+    const allDossiers: { numero: string; raisonSociale: string; siret: string }[] =
       dossierData.listeDossiers ?? [];
 
-    // 2. Pour chaque dossier: fetch M-1, M, M+1 + check bulletins calcules
+    // Fetch effectif M pour tous les dossiers (batch 10)
+    const dossierSalaries: Map<string, SalaryEntry[]> = new Map();
+    const BATCH_SAL = 10;
+    for (let i = 0; i < allDossiers.length; i += BATCH_SAL) {
+      const batch = allDossiers.slice(i, i + BATCH_SAL);
+      const results = await Promise.all(
+        batch.map(async (d) => ({
+          numero: d.numero,
+          salaries: await fetchSalaries(d.numero, period),
+        }))
+      );
+      for (const r of results) {
+        if (r.salaries.length > 0) dossierSalaries.set(r.numero, r.salaries);
+      }
+    }
+
+    // Upsert tous les dossiers (effectif)
+    for (const d of allDossiers) {
+      const eff = dossierSalaries.get(d.numero)?.length ?? 0;
+      await sb.from("dossiers").upsert({
+        id: `dos_${d.numero}`,
+        numero: d.numero,
+        nom: d.raisonSociale.trim(),
+        siret: d.siret,
+        effectif: eff,
+        synced_from_silae: true,
+        last_silae_sync: new Date().toISOString(),
+      }, { onConflict: "numero", ignoreDuplicates: false });
+    }
+
+    // PHASE 2 : Pour les dossiers avec effectif > 0 : entrees/sorties + BS calcules
+    const activeDossiers = allDossiers.filter((d) => dossierSalaries.has(d.numero));
     let totalEntrees = 0;
     let totalSorties = 0;
     let totalBsCalcules = 0;
-    const lines: any[] = [];
 
-    const BATCH = 5;
-    for (let i = 0; i < dossiers.length; i += BATCH) {
-      const batch = dossiers.slice(i, i + BATCH);
-      const results = await Promise.all(
+    const moisId = `sp_${period.replace("-", "_")}`;
+    await sb.from("suivi_paie_mois").upsert({
+      id: moisId, period, last_sync_at: new Date().toISOString(),
+    }, { onConflict: "period" });
+
+    // Traiter les dossiers actifs par batch de 3 (plus de detail par dossier)
+    const BATCH_ACTIVE = 3;
+    for (let i = 0; i < activeDossiers.length; i += BATCH_ACTIVE) {
+      const batch = activeDossiers.slice(i, i + BATCH_ACTIVE);
+      await Promise.all(
         batch.map(async (d) => {
-          const [salPrev, salCurr, salNext] = await Promise.all([
+          const salCurr = dossierSalaries.get(d.numero) ?? [];
+
+          // Entrees/sorties : fetch M-1 et M+1
+          const [salPrev, salNext] = await Promise.all([
             fetchSalaries(d.numero, pPrev),
-            fetchSalaries(d.numero, period),
             fetchSalaries(d.numero, pNext),
           ]);
 
@@ -130,94 +149,64 @@ serve(async (req) => {
           const entrees = [...matCurr].filter((m) => !matPrev.has(m)).length;
           const sorties = [...matCurr].filter((m) => !matNext.has(m)).length;
 
-          // Compter les bulletins reellement calcules
-          const bsCalcules = salCurr.length > 0
-            ? await countCalculatedBulletins(d.numero, salCurr, period)
-            : 0;
+          // BS calcules : check bulletin par salarie (batch 5)
+          let bsCalcules = 0;
+          for (let j = 0; j < salCurr.length; j += 5) {
+            const salBatch = salCurr.slice(j, j + 5);
+            const checks = await Promise.all(
+              salBatch.map((s) => checkBulletinExists(d.numero, s.matriculeSalarie, period))
+            );
+            bsCalcules += checks.filter(Boolean).length;
+          }
 
-          return {
-            numero: d.numero,
-            nom: d.raisonSociale.trim(),
-            siret: d.siret,
+          totalEntrees += entrees;
+          totalSorties += sorties;
+          totalBsCalcules += bsCalcules;
+
+          // Preserve manual fields
+          const existing = await sb.from("suivi_paie_lines")
+            .select("gp, date_reception, traitement_par, date_envoi_bulletins")
+            .eq("mois_id", moisId).eq("numero_dossier", d.numero).maybeSingle();
+
+          await sb.from("suivi_paie_lines").upsert({
+            id: `spl_${period.replace("-", "_")}_${d.numero}`,
+            mois_id: moisId,
+            numero_dossier: d.numero,
+            nom_dossier: d.raisonSociale.trim(),
             effectif: salCurr.length,
-            bsCalcules,
+            bs_calcules: bsCalcules,
             entrees,
             sorties,
-            salCurr,
-          };
+            synced_from_silae: true,
+            last_silae_sync: new Date().toISOString(),
+            gp: existing?.data?.gp ?? "",
+            date_reception: existing?.data?.date_reception ?? "",
+            traitement_par: existing?.data?.traitement_par ?? "",
+            date_envoi_bulletins: existing?.data?.date_envoi_bulletins ?? "",
+          }, { onConflict: "id" });
+
+          // Snapshots
+          if (salCurr.length > 0) {
+            await sb.from("silae_salaries_snapshot").upsert(
+              salCurr.map((s) => ({
+                numero_dossier: d.numero,
+                period,
+                matricule: s.matriculeSalarie,
+                nom_complet: s.nomAffiche,
+              })),
+              { onConflict: "numero_dossier,period,matricule" }
+            );
+          }
         })
       );
-
-      for (const r of results) {
-        totalEntrees += r.entrees;
-        totalSorties += r.sorties;
-        totalBsCalcules += r.bsCalcules;
-
-        // Upsert dossier
-        await sb.from("dossiers").upsert({
-          id: `dos_${r.numero}`,
-          numero: r.numero,
-          nom: r.nom,
-          siret: r.siret,
-          effectif: r.effectif,
-          synced_from_silae: true,
-          last_silae_sync: new Date().toISOString(),
-        }, { onConflict: "numero", ignoreDuplicates: false });
-
-        if (r.effectif > 0 || r.entrees > 0 || r.sorties > 0) {
-          lines.push(r);
-        }
-
-        // Snapshots
-        if (r.salCurr.length > 0) {
-          await sb.from("silae_salaries_snapshot").upsert(
-            r.salCurr.map((s) => ({
-              numero_dossier: r.numero,
-              period,
-              matricule: s.matriculeSalarie,
-              nom_complet: s.nomAffiche,
-            })),
-            { onConflict: "numero_dossier,period,matricule" }
-          );
-        }
-      }
     }
 
-    // 3. Upsert suivi paie
-    const moisId = `sp_${period.replace("-", "_")}`;
-    await sb.from("suivi_paie_mois").upsert({
-      id: moisId, period, last_sync_at: new Date().toISOString(),
-    }, { onConflict: "period" });
-
-    for (const l of lines) {
-      const existing = await sb.from("suivi_paie_lines")
-        .select("gp, date_reception, traitement_par, date_envoi_bulletins")
-        .eq("mois_id", moisId).eq("numero_dossier", l.numero).maybeSingle();
-
-      await sb.from("suivi_paie_lines").upsert({
-        id: `spl_${period.replace("-", "_")}_${l.numero}`,
-        mois_id: moisId,
-        numero_dossier: l.numero,
-        nom_dossier: l.nom,
-        effectif: l.effectif,
-        bs_calcules: l.bsCalcules,
-        entrees: l.entrees,
-        sorties: l.sorties,
-        synced_from_silae: true,
-        last_silae_sync: new Date().toISOString(),
-        gp: existing?.data?.gp ?? "",
-        date_reception: existing?.data?.date_reception ?? "",
-        traitement_par: existing?.data?.traitement_par ?? "",
-        date_envoi_bulletins: existing?.data?.date_envoi_bulletins ?? "",
-      }, { onConflict: "id" });
-    }
-
-    // 4. Log fin
+    // Log fin
     if (logId) {
       await sb.from("silae_sync_log").update({
         status: "ok",
         finished_at: new Date().toISOString(),
-        dossiers_synced: dossiers.length,
+        dossiers_synced: allDossiers.length,
         entrees_detected: totalEntrees,
         sorties_detected: totalSorties,
       }).eq("id", logId);
@@ -225,9 +214,9 @@ serve(async (req) => {
 
     return jsonResponse({
       status: "ok", period,
-      dossiers_synced: dossiers.length,
-      lines_with_data: lines.length,
-      effectif_total: lines.reduce((s, l) => s + l.effectif, 0),
+      dossiers_synced: allDossiers.length,
+      dossiers_actifs: activeDossiers.length,
+      effectif_total: [...dossierSalaries.values()].reduce((s, v) => s + v.length, 0),
       bs_calcules_total: totalBsCalcules,
       entrees_total: totalEntrees,
       sorties_total: totalSorties,
