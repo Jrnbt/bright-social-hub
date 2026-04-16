@@ -56,6 +56,7 @@ export async function silaePost(endpoint: string, body: Record<string, unknown>)
       "Ocp-Apim-Subscription-Key": subscriptionKey,
       "Content-Type": "application/json",
       "Accept": "application/json",
+      "dossiers": "",
     },
     body: JSON.stringify(body),
   });
