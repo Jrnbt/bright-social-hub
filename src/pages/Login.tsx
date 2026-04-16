@@ -3,7 +3,6 @@ import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 
 export function Login({ onAuth }: { onAuth: () => void }) {
-  const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,17 +15,12 @@ export function Login({ onAuth }: { onAuth: () => void }) {
     }
     setLoading(true);
     try {
-      if (isSignUp) {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        toast.success("Compte cree ! Verifiez votre email pour confirmer.");
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        onAuth();
-      }
-    } catch (err: any) {
-      toast.error(err.message || "Erreur d'authentification");
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      onAuth();
+    } catch {
+      // Message generique — ne revele jamais si l'email existe ou non
+      toast.error("Email ou mot de passe incorrect");
     } finally {
       setLoading(false);
     }
@@ -48,9 +42,7 @@ export function Login({ onAuth }: { onAuth: () => void }) {
         </div>
 
         <div className="bg-white rounded-xl border border-border shadow-sm p-8">
-          <h2 className="text-lg font-black text-marine mb-6">
-            {isSignUp ? "Creer un compte" : "Connexion"}
-          </h2>
+          <h2 className="text-lg font-black text-marine mb-6">Connexion</h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -64,6 +56,7 @@ export function Login({ onAuth }: { onAuth: () => void }) {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="prenom@brightconseil.fr"
                 autoComplete="email"
+                maxLength={100}
               />
             </div>
             <div>
@@ -76,7 +69,8 @@ export function Login({ onAuth }: { onAuth: () => void }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                autoComplete={isSignUp ? "new-password" : "current-password"}
+                autoComplete="current-password"
+                maxLength={128}
               />
             </div>
             <button
@@ -84,24 +78,15 @@ export function Login({ onAuth }: { onAuth: () => void }) {
               disabled={loading}
               className="w-full py-3 rounded-lg bg-rose text-white text-sm font-extrabold hover:bg-rose-hover transition-all disabled:opacity-50"
             >
-              {loading
-                ? "Chargement..."
-                : isSignUp
-                ? "Creer le compte"
-                : "Se connecter"}
+              {loading ? "Chargement..." : "Se connecter"}
             </button>
           </form>
 
-          <div className="mt-6 text-center">
-            <button
-              onClick={() => setIsSignUp(!isSignUp)}
-              className="text-sm font-bold text-muted hover:text-rose transition-colors"
-            >
-              {isSignUp
-                ? "Deja un compte ? Se connecter"
-                : "Pas encore de compte ? S'inscrire"}
-            </button>
-          </div>
+          <p className="mt-6 text-center text-xs text-muted">
+            Acces reserve a l'equipe Bright Conseil.
+            <br />
+            Contactez votre administrateur pour obtenir un compte.
+          </p>
         </div>
 
         <p className="text-center text-[11px] text-muted/50 mt-6">

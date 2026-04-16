@@ -1,15 +1,17 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getCorsHeaders, corsResponse } from "../_shared/cors.ts";
+import { verifyAuth, unauthorizedResponse } from "../_shared/auth.ts";
+import { isValidPeriod, jsonResponse, errorResponse, sanitizeForLog } from "../_shared/validate.ts";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+interface SalaryEntry {
+  matriculeSalarie: string;
+  nomAffiche: string;
+}
 
-interface SalaryEntry { matriculeSalarie: string; nomAffiche: string }
+// --- Silae API direct call ---
 
-// Appel Silae via silae-proxy interne
-async function silaeCall(action: string, params: Record<string, any>): Promise<any> {
+async function silaeCall(action: string, params: Record<string, unknown>): Promise<unknown> {
   const SILAE_URL = Deno.env.get("SILAE_API_URL") ?? "";
   const SILAE_TOKEN = Deno.env.get("SILAE_API_TOKEN") ?? "";
 
@@ -18,7 +20,12 @@ async function silaeCall(action: string, params: Record<string, any>): Promise<a
     lister_salaries: "/api/v1/Salaries/ListerSalariesInformations",
   };
 
-  const res = await fetch(`${SILAE_URL}${endpoints[action]}`, {
+  const endpoint = endpoints[action];
+  if (!endpoint) {
+    throw new Error(`silaeCall: action inconnue: ${action}`);
+  }
+
+  const res = await fetch(`${SILAE_URL}${endpoint}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -26,8 +33,15 @@ async function silaeCall(action: string, params: Record<string, any>): Promise<a
     },
     body: JSON.stringify(params),
   });
+
+  if (!res.ok) {
+    throw new Error(`Silae API error: status ${res.status}`);
+  }
+
   return res.json();
 }
+
+// --- Period helpers ---
 
 function prevPeriod(p: string): string {
   const [y, m] = p.split("-").map(Number);
@@ -45,45 +59,94 @@ function toIsoDate(period: string): string {
   return `${period}-01T00:00:00`;
 }
 
+// --- Salary fetch (reusable, no duplication) ---
+
 async function fetchSalaries(numero: string, period: string): Promise<SalaryEntry[]> {
-  const data = await silaeCall("lister_salaries", {
+  const data = (await silaeCall("lister_salaries", {
     numeroDossier: numero,
     dateReference: toIsoDate(period),
-  });
+  })) as { listeSalariesInformations?: SalaryEntry[] };
   return data.listeSalariesInformations ?? [];
 }
 
+// --- Main ---
+
 serve(async (req) => {
+  const cors = getCorsHeaders(req);
+
+  // Preflight
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: CORS });
+    return corsResponse(req);
   }
 
+  // Auth
+  const auth = await verifyAuth(req);
+  if (!auth.ok) {
+    return unauthorizedResponse(cors);
+  }
+
+  // Supabase service client
   const SB_URL = Deno.env.get("SUPABASE_URL") ?? "";
   const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if (!SB_URL || !SB_KEY) {
+    console.error("silae-sync: SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY non configure");
+    return errorResponse("Configuration serveur manquante", cors, 500);
+  }
   const sb = createClient(SB_URL, SB_KEY);
 
   try {
-    const { period } = await req.json();
-    if (!period) throw new Error("period requis (ex: 2026-03)");
+    // Parse body
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return errorResponse("Corps de requete JSON invalide", cors, 400);
+    }
+
+    const { period } = body as { period?: unknown };
+
+    // Validate period
+    if (typeof period !== "string" || !isValidPeriod(period)) {
+      return errorResponse("period requis au format YYYY-MM (ex: 2026-03)", cors, 400);
+    }
+
+    // Check Silae config
+    const SILAE_URL = Deno.env.get("SILAE_API_URL") ?? "";
+    const SILAE_TOKEN = Deno.env.get("SILAE_API_TOKEN") ?? "";
+    if (!SILAE_URL || !SILAE_TOKEN) {
+      console.error("silae-sync: SILAE_API_URL ou SILAE_API_TOKEN non configure");
+      return errorResponse("Configuration serveur manquante", cors, 500);
+    }
 
     const pPrev = prevPeriod(period);
     const pNext = nextPeriod(period);
 
-    // Log debut
-    const { data: logRow } = await sb.from("silae_sync_log").insert({
-      period, status: "running",
-    }).select().single();
-    const logId = logRow?.id;
+    // Log start
+    const logId = crypto.randomUUID();
+    await sb.from("silae_sync_log").insert({
+      id: logId,
+      period,
+      status: "running",
+    });
 
-    // 1. Lister tous les dossiers en production
-    const dossierData = await silaeCall("lister_dossiers", { etatDossier: 2 });
-    const dossiers: { numero: string; raisonSociale: string; siret: string }[] =
-      dossierData.listeDossiers ?? [];
+    // 1. List all production dossiers
+    const dossierData = (await silaeCall("lister_dossiers", { etatDossier: 2 })) as {
+      listeDossiers?: { numero: string; raisonSociale: string; siret: string }[];
+    };
+    const dossiers = dossierData.listeDossiers ?? [];
 
-    // 2. Pour chaque dossier, fetch M-1, M, M+1 (par batch de 10)
+    // 2. For each dossier, fetch M-1, M, M+1 (batched by 10)
     let totalEntrees = 0;
     let totalSorties = 0;
-    const lines: any[] = [];
+    const lines: {
+      numero: string;
+      nom: string;
+      siret: string;
+      bulletins: number;
+      entrees: number;
+      sorties: number;
+      salCurr: SalaryEntry[];
+    }[] = [];
 
     const BATCH = 10;
     for (let i = 0; i < dossiers.length; i += BATCH) {
@@ -100,9 +163,9 @@ serve(async (req) => {
           const matCurr = new Set(salCurr.map((s) => s.matriculeSalarie));
           const matNext = new Set(salNext.map((s) => s.matriculeSalarie));
 
-          // Entrees = dans M, absent de M-1
+          // Entrees = in M, absent from M-1
           const entrees = [...matCurr].filter((m) => !matPrev.has(m)).length;
-          // Sorties = dans M, absent de M+1
+          // Sorties = in M, absent from M+1
           const sorties = [...matCurr].filter((m) => !matNext.has(m)).length;
 
           return {
@@ -112,6 +175,7 @@ serve(async (req) => {
             bulletins: salCurr.length,
             entrees,
             sorties,
+            salCurr, // keep reference to avoid double fetch
           };
         })
       );
@@ -121,25 +185,27 @@ serve(async (req) => {
         totalSorties += r.sorties;
 
         // Upsert dossier
-        await sb.from("dossiers").upsert({
-          id: `dos_silae_${r.numero}`,
-          numero: r.numero,
-          nom: r.nom,
-          siret: r.siret,
-          effectif: r.bulletins,
-          synced_from_silae: true,
-          last_silae_sync: new Date().toISOString(),
-        }, { onConflict: "numero", ignoreDuplicates: false });
+        await sb.from("dossiers").upsert(
+          {
+            id: `dos_silae_${r.numero}`,
+            numero: r.numero,
+            nom: r.nom,
+            siret: r.siret,
+            effectif: r.bulletins,
+            synced_from_silae: true,
+            last_silae_sync: new Date().toISOString(),
+          },
+          { onConflict: "numero", ignoreDuplicates: false }
+        );
 
         if (r.bulletins > 0 || r.entrees > 0 || r.sorties > 0) {
           lines.push(r);
         }
 
-        // Snapshots salaries pour historique
-        const salCurr = await fetchSalaries(r.numero, period);
-        if (salCurr.length > 0) {
+        // Snapshot salaries for history — reuse salCurr from above (NO second fetch)
+        if (r.salCurr.length > 0) {
           await sb.from("silae_salaries_snapshot").upsert(
-            salCurr.map((s) => ({
+            r.salCurr.map((s) => ({
               numero_dossier: r.numero,
               period,
               matricule: s.matriculeSalarie,
@@ -153,53 +219,61 @@ serve(async (req) => {
 
     // 3. Upsert suivi_paie_mois + lines
     const moisId = `sp_${period.replace("-", "_")}`;
-    await sb.from("suivi_paie_mois").upsert({
-      id: moisId,
-      period,
-      last_sync_at: new Date().toISOString(),
-    }, { onConflict: "period" });
+    await sb.from("suivi_paie_mois").upsert(
+      {
+        id: moisId,
+        period,
+        last_sync_at: new Date().toISOString(),
+      },
+      { onConflict: "period" }
+    );
 
     for (const l of lines) {
-      // Preserve manual fields via selective update
-      const existing = await sb.from("suivi_paie_lines")
+      // Preserve manual fields via selective read
+      const existing = await sb
+        .from("suivi_paie_lines")
         .select("gp, date_reception, traitement_par, date_envoi_bulletins")
         .eq("mois_id", moisId)
         .eq("numero_dossier", l.numero)
         .maybeSingle();
 
-      await sb.from("suivi_paie_lines").upsert({
-        id: `spl_${period.replace("-", "_")}_${l.numero}`,
-        mois_id: moisId,
-        numero_dossier: l.numero,
-        nom_dossier: l.nom,
-        nombre_bulletins: l.bulletins,
-        entrees: l.entrees,
-        sorties: l.sorties,
-        synced_from_silae: true,
-        last_silae_sync: new Date().toISOString(),
-        // Preserve manual fields
-        gp: existing?.data?.gp ?? "",
-        date_reception: existing?.data?.date_reception ?? "",
-        traitement_par: existing?.data?.traitement_par ?? "",
-        date_envoi_bulletins: existing?.data?.date_envoi_bulletins ?? "",
-      }, { onConflict: "id" });
+      await sb.from("suivi_paie_lines").upsert(
+        {
+          id: `spl_${period.replace("-", "_")}_${l.numero}`,
+          mois_id: moisId,
+          numero_dossier: l.numero,
+          nom_dossier: l.nom,
+          nombre_bulletins: l.bulletins,
+          entrees: l.entrees,
+          sorties: l.sorties,
+          synced_from_silae: true,
+          last_silae_sync: new Date().toISOString(),
+          // Preserve manual fields
+          gp: existing?.data?.gp ?? "",
+          date_reception: existing?.data?.date_reception ?? "",
+          traitement_par: existing?.data?.traitement_par ?? "",
+          date_envoi_bulletins: existing?.data?.date_envoi_bulletins ?? "",
+        },
+        { onConflict: "id" }
+      );
     }
 
-    // 4. Auto-generation de taches pour anomalies detectees
-    const autoTasks: any[] = [];
+    // 4. Auto-generate tasks for detected anomalies
+    const autoTasks: Record<string, unknown>[] = [];
     for (const l of lines) {
-      // Trouver le dossier et son GP responsable
-      const { data: dosRow } = await sb.from("dossiers")
+      // Find dossier and its responsible GP
+      const { data: dosRow } = await sb
+        .from("dossiers")
         .select("id, responsable")
         .eq("numero", l.numero)
         .maybeSingle();
       const dosId = dosRow?.id ?? `dos_silae_${l.numero}`;
       const gpId = dosRow?.responsable ?? null;
 
-      // Anomalie: entrees detectees -> tache de verification
+      // Anomaly: entries detected -> verification task
       if (l.entrees > 0) {
         autoTasks.push({
-          id: `task_auto_ent_${period.replace("-","_")}_${l.numero}`,
+          id: crypto.randomUUID(),
           title: `Verifier ${l.entrees} entree(s) — ${l.nom} (${period})`,
           priority: "high",
           category: "paie",
@@ -213,10 +287,10 @@ serve(async (req) => {
         });
       }
 
-      // Anomalie: sorties detectees -> tache de verification
+      // Anomaly: exits detected -> verification task
       if (l.sorties > 0) {
         autoTasks.push({
-          id: `task_auto_sor_${period.replace("-","_")}_${l.numero}`,
+          id: crypto.randomUUID(),
           title: `Verifier ${l.sorties} sortie(s) — ${l.nom} (${period})`,
           priority: "high",
           category: "paie",
@@ -230,10 +304,10 @@ serve(async (req) => {
         });
       }
 
-      // Anomalie: 0 bulletins alors que dossier actif -> verification
+      // Anomaly: 0 bulletins on active dossier -> verification
       if (l.bulletins === 0) {
         autoTasks.push({
-          id: `task_auto_nob_${period.replace("-","_")}_${l.numero}`,
+          id: crypto.randomUUID(),
           title: `Aucun bulletin detecte — ${l.nom} (${period})`,
           priority: "urgent",
           category: "paie",
@@ -248,37 +322,34 @@ serve(async (req) => {
       }
     }
 
-    // Upsert tasks (evite les doublons grace a l'id deterministe)
+    // Upsert tasks
     if (autoTasks.length > 0) {
       await sb.from("tasks").upsert(autoTasks, { onConflict: "id", ignoreDuplicates: true });
     }
 
-    // 5. Log fin
-    if (logId) {
-      await sb.from("silae_sync_log").update({
-        status: "ok",
-        finished_at: new Date().toISOString(),
-        dossiers_synced: dossiers.length,
-        entrees_detected: totalEntrees,
-        sorties_detected: totalSorties,
-      }).eq("id", logId);
-    }
-
-    return new Response(JSON.stringify({
+    // 5. Log finish
+    await sb.from("silae_sync_log").update({
       status: "ok",
-      period,
+      finished_at: new Date().toISOString(),
       dossiers_synced: dossiers.length,
-      lines_with_data: lines.length,
-      entrees_total: totalEntrees,
-      sorties_total: totalSorties,
-      auto_tasks_created: autoTasks.length,
-    }), {
-      headers: { ...CORS, "Content-Type": "application/json" },
-    });
+      entrees_detected: totalEntrees,
+      sorties_detected: totalSorties,
+    }).eq("id", logId);
+
+    return jsonResponse(
+      {
+        status: "ok",
+        period,
+        dossiers_synced: dossiers.length,
+        lines_with_data: lines.length,
+        entrees_total: totalEntrees,
+        sorties_total: totalSorties,
+        auto_tasks_created: autoTasks.length,
+      },
+      cors
+    );
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
-      status: 500,
-      headers: { ...CORS, "Content-Type": "application/json" },
-    });
+    console.error("silae-sync: erreur interne", err);
+    return errorResponse("Erreur interne du serveur", cors, 500);
   }
 });

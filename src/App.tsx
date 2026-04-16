@@ -26,7 +26,7 @@ import {
 import { fetchMissiveConversations, testMissiveConnection } from "@/lib/missive";
 import { supabase } from "@/lib/supabase";
 import { REPORT_TYPE_LABELS, CONTROL_CHECKS_TEMPLATES } from "@/lib/constants";
-import { generateId, formatPeriod, getCurrentPeriod } from "@/lib/utils";
+import { generateId, formatPeriod, getCurrentPeriod, escapeHtml } from "@/lib/utils";
 import type { PageId, Task, Member, Control, Report, SuiviPaieMois, Dossier } from "@/lib/types";
 
 const PAGE_INFO: Record<PageId, { title: string; subtitle: string }> = {
@@ -693,10 +693,11 @@ function AuthenticatedApp() {
       const report = reports.find((r) => r.id === id);
       if (!report) return;
 
-      let html = `<h2>${report.typeLabel}</h2>
-        <p><strong>Dossier:</strong> ${report.dossierName} (${report.dossierNumero})</p>
-        <p><strong>Période:</strong> ${formatPeriod(report.period)}</p>
-        <p><strong>Généré le:</strong> ${new Date(report.createdAt).toLocaleDateString("fr-FR")}</p>
+      const e = escapeHtml;
+      let html = `<h2>${e(report.typeLabel)}</h2>
+        <p><strong>Dossier:</strong> ${e(report.dossierName)} (${e(report.dossierNumero)})</p>
+        <p><strong>Période:</strong> ${e(formatPeriod(report.period))}</p>
+        <p><strong>Généré le:</strong> ${e(new Date(report.createdAt).toLocaleDateString("fr-FR"))}</p>
         <hr style="margin:16px 0;">`;
 
       if (report.controls.length) {
@@ -704,16 +705,16 @@ function AuthenticatedApp() {
           html += `<h3>Contrôle #${i + 1}</h3>`;
           ctrl.checks.forEach((ch) => {
             const icon = ch.status === "ok" ? "OK" : ch.status === "ko" ? "KO" : "--";
-            html += `<p>[${icon}] <strong>${ch.name}</strong> ${ch.detail ? "— " + ch.detail : ""}</p>`;
+            html += `<p>[${e(icon)}] <strong>${e(ch.name)}</strong> ${ch.detail ? "— " + e(ch.detail) : ""}</p>`;
           });
         });
       } else {
-        html += "<p><em>Aucun contrôle associé. Lancez un contrôle mensuel pour alimenter le rapport.</em></p>";
+        html += "<p><em>Aucun contrôle associé.</em></p>";
       }
 
       const win = window.open("", "_blank", "width=800,height=600");
       if (win) {
-        win.document.write(`<!DOCTYPE html><html><head><title>Rapport - ${report.dossierName}</title>
+        win.document.write(`<!DOCTYPE html><html><head><title>Rapport - ${e(report.dossierName)}</title>
           <style>body{font-family:'Nunito',sans-serif;padding:40px;max-width:800px;margin:auto;color:#1A1A2E;}
           h2{color:#0F0135;}h3{color:#FF0749;margin-top:20px;}hr{border:1px solid #E2E4EA;}
           p{margin:6px 0;font-size:14px;}</style></head><body>${html}</body></html>`);

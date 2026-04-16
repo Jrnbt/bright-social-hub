@@ -70,10 +70,14 @@ function useSupabaseTable<T extends { id: string }>(
         const prevMap = new Map(prev.map((r) => [r.id, r]));
         const nextMap = new Map(next.map((r) => [r.id, r]));
 
+        const handleDbError = (op: string) => (result: { error: any }) => {
+          if (result.error) console.error(`[DB ${op}] ${table}:`, result.error.message);
+        };
+
         // Inserts
         for (const [id, row] of nextMap) {
           if (!prevMap.has(id)) {
-            supabase.from(table).insert(toDb(row)).then();
+            supabase.from(table).insert(toDb(row)).then(handleDbError("INSERT"));
           }
         }
 
@@ -81,14 +85,14 @@ function useSupabaseTable<T extends { id: string }>(
         for (const [id, row] of nextMap) {
           const old = prevMap.get(id);
           if (old && JSON.stringify(old) !== JSON.stringify(row)) {
-            supabase.from(table).update(toDb(row)).eq("id", id).then();
+            supabase.from(table).update(toDb(row)).eq("id", id).then(handleDbError("UPDATE"));
           }
         }
 
         // Deletes
         for (const [id] of prevMap) {
           if (!nextMap.has(id)) {
-            supabase.from(table).delete().eq("id", id).then();
+            supabase.from(table).delete().eq("id", id).then(handleDbError("DELETE"));
           }
         }
 

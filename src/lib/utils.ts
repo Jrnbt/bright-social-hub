@@ -47,6 +47,26 @@ export function getCurrentPeriod(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+/** Echappe le HTML pour eviter les injections XSS */
+export function escapeHtml(str: string): string {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+/** Valide un format SIRET (14 chiffres) */
+export function isValidSiret(s: string): boolean {
+  return s === "" || /^\d{14}$/.test(s);
+}
+
+/** Tronque une chaine a une longueur max */
+export function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) : s;
+}
+
 export function getLast12Periods(): { value: string; label: string }[] {
   const periods = [];
   const now = new Date();

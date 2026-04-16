@@ -50,10 +50,14 @@ export function Settings({
     setNewLastname("");
   };
 
-  const handleTestSilae = () => {
+  const handleTestSilae = async () => {
     setSilaeStatus("checking");
-    onTestSilae();
-    setTimeout(() => setSilaeStatus("connected"), 800);
+    try {
+      await onTestSilae();
+      setSilaeStatus("connected");
+    } catch {
+      setSilaeStatus("unknown");
+    }
   };
 
   return (

@@ -66,7 +66,7 @@ export function Assistant({ dossiers, tasks, controls }: AssistantProps) {
         ...prev,
         {
           role: "assistant",
-          content: `Erreur: ${err.message}. Verifiez que la cle ANTHROPIC_API_KEY est configuree dans les secrets Supabase.`,
+          content: "Une erreur est survenue. Veuillez reessayer dans quelques instants.",
           timestamp: new Date().toISOString(),
         },
       ]);

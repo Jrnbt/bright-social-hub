@@ -1,17 +1,27 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+import { getCorsHeaders, corsResponse } from "../_shared/cors.ts";
+import { verifyAuth, unauthorizedResponse } from "../_shared/auth.ts";
+import { jsonResponse, errorResponse, sanitizeForLog } from "../_shared/validate.ts";
 
 // Delai en jours avant relance (configurable)
 const DELAI_RELANCE_JOURS = 3;
+const MAX_OVERDUE_TASKS = 500;
+const MAX_TASK_TITLE_LENGTH = 300;
+const MAX_DESCRIPTION_LENGTH = 2000;
 
 serve(async (req) => {
+  const cors = getCorsHeaders(req);
+
+  // Preflight
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: CORS });
+    return corsResponse(req);
+  }
+
+  // Auth
+  const auth = await verifyAuth(req);
+  if (!auth.ok) {
+    return unauthorizedResponse(cors);
   }
 
   const SB_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -20,7 +30,7 @@ serve(async (req) => {
   const sb = createClient(SB_URL, SB_KEY);
 
   try {
-    // 1. Trouver les taches non traitees depuis plus de N jours
+    // 1. Find tasks untreated for more than N days
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - DELAI_RELANCE_JOURS);
 
@@ -28,14 +38,22 @@ serve(async (req) => {
       .from("tasks")
       .select("id, title, assignee, dossier, created_at, status, priority")
       .in("status", ["todo", "progress"])
-      .lt("created_at", cutoff.toISOString());
+      .lt("created_at", cutoff.toISOString())
+      .limit(MAX_OVERDUE_TASKS);
 
-    if (error) throw error;
-    if (!overdueTasks || overdueTasks.length === 0) {
-      return json({ relances_sent: 0, message: "Aucune tache en retard" });
+    if (error) {
+      console.error("relance-auto query error:", error);
+      return errorResponse("Erreur lors de la recherche des taches", cors, 500);
     }
 
-    // 2. Regrouper par assignee (GP)
+    if (!overdueTasks || overdueTasks.length === 0) {
+      return jsonResponse(
+        { relances_sent: 0, message: "Aucune tache en retard" },
+        cors,
+      );
+    }
+
+    // 2. Group by assignee
     const byAssignee = new Map<string, typeof overdueTasks>();
     for (const t of overdueTasks) {
       const key = t.assignee || "non_assigne";
@@ -43,11 +61,22 @@ serve(async (req) => {
       byAssignee.get(key)!.push(t);
     }
 
-    // 3. Recuperer les emails des membres
+    // 3. Build reminder tasks with secure random IDs
     const memberIds = [...byAssignee.keys()].filter((k) => k !== "non_assigne");
-    // Note: les membres n'ont pas d'email en base actuellement.
-    // On cree une tache de relance interne a la place.
-    const relanceTasks: any[] = [];
+
+    const relanceTasks: Array<{
+      id: string;
+      title: string;
+      priority: string;
+      category: string;
+      assignee: string;
+      due: string;
+      dossier: string;
+      description: string;
+      status: string;
+      source: string;
+      created_at: string;
+    }> = [];
 
     for (const [assignee, tasks] of byAssignee) {
       if (assignee === "non_assigne") continue;
@@ -59,32 +88,41 @@ serve(async (req) => {
         .maybeSingle();
 
       const memberName = member
-        ? `${member.firstname} ${member.lastname}`
+        ? sanitizeForLog(`${member.firstname} ${member.lastname}`, 100)
         : "Membre inconnu";
 
       const taskList = tasks
-        .map((t) => `- ${t.title} (${t.priority})`)
+        .map(
+          (t) =>
+            `- ${sanitizeForLog(t.title, MAX_TASK_TITLE_LENGTH)} (${sanitizeForLog(t.priority, 20)})`,
+        )
         .join("\n");
 
+      const description =
+        `Les taches suivantes sont non traitees depuis plus de ${DELAI_RELANCE_JOURS} jours:\n\n${taskList}`;
+
       relanceTasks.push({
-        id: `task_relance_${Date.now()}_${assignee}`,
-        title: `RELANCE: ${tasks.length} tache(s) en retard pour ${memberName}`,
+        id: crypto.randomUUID(),
+        title: sanitizeForLog(
+          `RELANCE: ${tasks.length} tache(s) en retard pour ${memberName}`,
+          MAX_TASK_TITLE_LENGTH,
+        ),
         priority: "urgent",
         category: "admin",
         assignee: assignee,
         due: new Date().toISOString().split("T")[0],
         dossier: "",
-        description: `Les taches suivantes sont non traitees depuis plus de ${DELAI_RELANCE_JOURS} jours:\n\n${taskList}`,
+        description: description.slice(0, MAX_DESCRIPTION_LENGTH),
         status: "todo",
         source: "silae",
         created_at: new Date().toISOString(),
       });
 
-      // Si Missive est configuree, envoyer un email via Missive
+      // If Missive is configured, send email via Missive
       if (MISSIVE_KEY) {
         try {
-          // Note: l'envoi d'email via Missive necessite l'endpoint POST /drafts
-          // On pourra l'activer quand l'API Missive sera configuree
+          // Note: email sending via Missive requires the POST /drafts endpoint
+          // Can be enabled when Missive API is configured
         } catch {
           // Silently ignore email errors
         }
@@ -92,22 +130,26 @@ serve(async (req) => {
     }
 
     if (relanceTasks.length > 0) {
-      await sb.from("tasks").upsert(relanceTasks, { onConflict: "id", ignoreDuplicates: true });
+      const { error: upsertError } = await sb
+        .from("tasks")
+        .upsert(relanceTasks, { onConflict: "id", ignoreDuplicates: true });
+
+      if (upsertError) {
+        console.error("relance-auto upsert error:", upsertError);
+        return errorResponse("Erreur lors de la creation des relances", cors, 500);
+      }
     }
 
-    return json({
-      relances_sent: relanceTasks.length,
-      overdue_tasks_total: overdueTasks.length,
-      gp_concerned: byAssignee.size,
-    });
+    return jsonResponse(
+      {
+        relances_sent: relanceTasks.length,
+        overdue_tasks_total: overdueTasks.length,
+        gp_concerned: byAssignee.size,
+      },
+      cors,
+    );
   } catch (err) {
-    return json({ error: String(err) }, 500);
+    console.error("relance-auto error:", err);
+    return errorResponse("Erreur interne du service", cors, 500);
   }
 });
-
-function json(data: any, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...CORS, "Content-Type": "application/json" },
-  });
-}
